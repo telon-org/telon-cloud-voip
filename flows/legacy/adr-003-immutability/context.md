@@ -1,0 +1,190 @@
+# ADR-003: Immutability Strategy
+
+> Architectural Decision Record for immutable data objects vs observable state.
+
+**Status**: DRAFT  
+**Date**: 2026-03-04  
+**Level**: Constraining  
+**Source**: Legacy analysis of src/Account.js, src/Call.js, src/Message.js
+
+---
+
+## Context
+
+The library needs to represent SIP state (accounts, calls, messages) in JavaScript. Options include:
+
+1. **Mutable objects with setters**: Update properties in place
+2. **Immutable snapshots**: Create new objects on state changes
+3. **Observable objects**: Proxy-based reactivity (Vue/MobX style)
+4. **State containers**: Redux-style single source of truth
+
+---
+
+## Decision
+
+**Use immutable snapshots for all data objects.**
+
+Account, Call, and Message are immutable:
+- All properties are getters (no setters)
+- Data set only in constructor
+- New instances created on state changes
+- No methods modify internal state
+
+```javascript
+export default class Account {
+  constructor(data) {
+    this._data = data;
+    this._registration = new AccountRegistration(data['registration']);
+  }
+
+  getId() { return this._data.id; }
+  getName() { return this._data.name; }
+  // ... all getters, no setters
+}
+```
+
+State updates create new instances:
+```javascript
+// Native event triggers new Account instance
+_onRegistrationChanged(data) {
+  this.emit("registration_changed", new Account(data));
+}
+```
+
+---
+
+## Rationale
+
+**Why Immutability:**
+
+1. **Predictability**: Objects never change after creation
+2. **Debugging**: Easy to log and inspect state at point in time
+3. **No Mutation Bugs**: Can't accidentally modify shared state
+4. **Simple Mental Model**: Data is a snapshot, not a living object
+5. **Matches Native Pattern**: Native callbacks provide snapshots, not observables
+6. **React Compatibility**: Works well with React's immutable data assumptions
+
+**Why NOT alternatives:**
+
+- **Mutable with setters**: Mutation bugs, hard to track changes
+- **Observable**: Complexity overhead, not needed for this use case
+- **State containers**: Over-engineering for simple data passing
+
+---
+
+## Consequences
+
+### Positive (+)
+
+- ✅ No accidental mutations
+- ✅ Easy to reason about (data flows one way)
+- ✅ Safe to pass around (can't be modified by receiver)
+- ✅ Easy to serialize (plain object storage)
+- ✅ Compatible with React state management
+- ✅ Thread-safe (not applicable to JS, but good practice)
+
+### Negative (-)
+
+- ❌ Memory overhead (new object on every change)
+- ❌ Garbage collection pressure (frequent state changes)
+- ❌ Identity checks fail (oldAccount !== newAccount)
+- ❌ No change tracking (can't detect what changed)
+- ❌ Property access verbosity (getters instead of direct access)
+
+### Neutral (○)
+
+- ○ All properties use getter methods
+- ○ Constructor stores data in private fields
+- ○ No Object.freeze() (reliance on convention, not enforcement)
+
+---
+
+## Implementation Details
+
+### Pattern
+
+```javascript
+class Call {
+  constructor({id, state, duration, ...rest}) {
+    this._id = id;
+    this._state = state;
+    this._duration = duration;
+    // Store all data in private fields
+  }
+
+  // Getters only
+  getId() { return this._id; }
+  getState() { return this._state; }
+  getDuration() { return this._duration; }
+  
+  // No setters!
+  // setState(state) { this._state = state; } // NOT ALLOWED
+}
+```
+
+### State Update Flow
+
+```
+Native Event: call_changed
+    ↓
+Endpoint._onCallChanged(data)
+    ↓
+new Call(data)  // New instance with updated state
+    ↓
+emit('call_changed', call)
+    ↓
+Application receives new Call instance
+    ↓
+Application updates its own state
+```
+
+### Identity Comparison
+
+```javascript
+let call1 = await endpoint.makeCall(account, '100');
+// ... time passes, call state changes ...
+let call2 = await new Promise(resolve => {
+  endpoint.once('call_changed', resolve);
+});
+
+console.log(call1 === call2);  // false (different instances)
+console.log(call1.getId() === call2.getId());  // true (same ID)
+```
+
+---
+
+## Compliance
+
+**This decision is CONSTRAINING.**
+
+It constrains:
+- No setters allowed in data classes
+- No in-place modifications
+- Must create new instances for state changes
+- Application code must handle object replacement
+
+---
+
+## Related Decisions
+
+- **ADR-001**: EventEmitter Choice (event payload is immutable)
+- **ADR-004**: God Object Pattern (Endpoint handles all mutations)
+
+---
+
+## Notes
+
+**Legacy Observation**: No Object.freeze() is used, so immutability is by convention only. Nothing prevents modification:
+
+```javascript
+const account = new Account(data);
+account._data.name = "Hacked";  // Possible but discouraged
+```
+
+**Recommendation**: Consider using Object.freeze() or modern JavaScript private fields (#_data) for stronger immutability guarantees.
+
+**Security Note**: Passwords stored in plaintext in Account._data.password. Immutability doesn't help with security, just prevents accidental changes.
+
+---
+
+*Generated by /legacy analysis*
